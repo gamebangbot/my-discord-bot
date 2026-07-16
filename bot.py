@@ -11,6 +11,24 @@ import re
 import json
 import math
 
+import os
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+
+# Render의 포트 감시를 통과하기 위한 초간단 가짜 웹서버 실행
+class MyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running!")
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), MyHandler)
+    server.serve_forever()
+
+threading.Thread(target=run_web_server, daemon=True).start()
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  전역 상수 & 변수
 # ══════════════════════════════════════════════════════════════════════════════
