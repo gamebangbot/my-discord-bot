@@ -1507,14 +1507,14 @@ async def prefix_title_book(ctx):
 #  ⛏️ 광질 게임 — 데이터 (밸런스 조정: 고등급 확률 대폭 하향)
 # ══════════════════════════════════════════════════════════════════════════════
 ORE_GRADES: dict[str, dict] = {
-    "일반": {"emoji": "🪨", "color": 0x8B8B8B, "w_min": 1, "w_max": 500, "w_per_g": 1, "prob": 0.70},
-    "희귀": {"emoji": "🖤", "color": 0x5C4033, "w_min": 400, "w_max": 1500, "w_per_g": 2, "prob": 0.20},
-    "레어": {"emoji": "🟠", "color": 0xFF8C00, "w_min": 1400, "w_max": 3500, "w_per_g": 5, "prob": 0.07},
-    "고급": {"emoji": "🟢", "color": 0x00B050, "w_min": 3500, "w_max": 8000, "w_per_g": 15, "prob": 0.02},     # 3.5% -> 2%
-    "신화": {"emoji": "💠", "color": 0x7B68EE, "w_min": 8000, "w_max": 20000, "w_per_g": 30, "prob": 0.007},  # 1.2% -> 0.7%
-    "전설": {"emoji": "💎", "color": 0x00BFFF, "w_min": 20000, "w_max": 50000, "w_per_g": 60, "prob": 0.002},  # 0.3% -> 0.2%
-    "미친": {"emoji": "🌌", "color": 0xFF00FF, "w_min": 50000, "w_max": 99999, "w_per_g": 100, "prob": 0.0004}, # 0.08% -> 0.04%
-    "???": {"emoji": "🔮", "color": 0xFFFFFF, "w_min": 1, "w_max": 10_000_000, "w_per_g": 0.5, "prob": 0.00005},
+    "일반": { "emoji": "🟫", "color": 0x8B8B8B, "w_min": 1, "w_max": 500, "w_per_g": 1, "prob": 0.90}, # 0.70 -> 0.90 (대폭 상향)
+    "희귀": { "emoji": "⚫", "color": 0x5C4033, "w_min": 400, "w_max": 1500, "w_per_g": 2, "prob": 0.07}, # 0.20 -> 0.07
+    "레어": { "emoji": "🔵", "color": 0xFF8C00, "w_min": 1400, "w_max": 3500, "w_per_g": 5, "prob": 0.02}, # 0.07 -> 0.02
+    "고급": { "emoji": "🟢", "color": 0x00B050, "w_min": 3500, "w_max": 8000, "w_per_g": 15, "prob": 0.008}, # 0.02 -> 0.008
+    "신화": { "emoji": "🔷", "color": 0x7B68EE, "w_min": 8000, "w_max": 20000, "w_per_g": 30, "prob": 0.001}, # 0.007 -> 0.001
+    "전설": { "emoji": "💠", "color": 0x00BFFF, "w_min": 20000, "w_max": 50000, "w_per_g": 60, "prob": 0.0001}, # 0.002 -> 0.0001
+    "미친": { "emoji": "🟣", "color": 0xFF00FF, "w_min": 50000, "w_max": 99999, "w_per_g": 100, "prob": 0.000005}, # 0.00004 -> 0.000005
+    "???": { "emoji": "⚪", "color": 0xFFFFFF, "w_min": 1, "w_max": 10_000_000, "w_per_g": 0.5, "prob": 0.000001} # 0.000005 -> 0.000001
 }
 
 ORE_LIST: dict[str, list[str]] = {
