@@ -36,6 +36,7 @@ DAILY_REWARD = 10000
 LOTTERY_COST = 5000
 MADE_BY_TAG  = ""          # on_ready 에서 봇 소유자 이름으로 채워짐
 BOT_OWNER_ID: int | None = None  # on_ready 에서 bot.owner_id 로 채워짐
+SERVER_OWNER_ALERT_ID = 1167625354547048531  # /서버장호출 알림 수신자
 
 admin_mode_users: set[str] = set()
 bot_ops_cache:    set[str] = set()   # !op 로 추가된 유저 (DB 동기화)
@@ -581,8 +582,8 @@ async def slash_shop(interaction: discord.Interaction):
     for start in range(0, len(rows), 25):
         chunk = rows[start:start + 25]
         lines = "\n".join(
-            f"**{row['item_number']}. {row['item_name']}**\n"
-            f"　구매: `{row['buy_price']:,}원` · 판매: `{row['sell_price']:,}원`"
+            f"**{row['item_number']}. {row['item_name']}** — "
+            f"판매: `{row['sell_price']:,}원` · 구매: `{row['buy_price']:,}원`"
             for row in chunk)
         embed = discord.Embed(
             title="🛒 게임 상점" + (f" ({start // 25 + 1})" if len(rows) > 25 else ""),
@@ -613,12 +614,51 @@ async def prefix_shop(ctx):
             "관리자는 `!상점추가 번호.상품명 (살 때 가격) (팔 때 가격)`으로 상품을 등록할 수 있어요.")
 
     lines = "\n".join(
-        f"**{row['item_number']}. {row['item_name']}**\n"
-        f"　구매: `{row['buy_price']:,}원` · 판매: `{row['sell_price']:,}원`"
+        f"**{row['item_number']}. {row['item_name']}** — "
+        f"판매: `{row['sell_price']:,}원` · 구매: `{row['buy_price']:,}원`"
         for row in rows)
     embed = discord.Embed(title="🛒 게임 상점", description=lines, color=discord.Color.gold())
     embed.set_footer(text=f"총 {len(rows)}개 상품 | 구매 기능은 지원하지 않아요. | {MADE_BY_TAG}")
     await ctx.send(embed=embed)
+
+@bot.tree.command(name="서버장호출", description="📣 서버장에게 개인 DM으로 알림을 보냅니다")
+async def slash_call_server_owner(interaction: discord.Interaction):
+    if not await slash_guard(interaction): return
+    if not interaction.guild:
+        return await interaction.response.send_message(
+            "❌ 서버 안에서만 사용할 수 있어요.", ephemeral=True)
+
+    try:
+        server_owner = await bot.fetch_user(SERVER_OWNER_ALERT_ID)
+        requester = interaction.user
+        channel_name = getattr(interaction.channel, "name", "알 수 없음")
+        alert = discord.Embed(
+            title="📣 서버장 호출 알림",
+            description=f"{requester.mention} 님이 서버장을 호출했어요.",
+            color=discord.Color.orange(),
+            timestamp=datetime.datetime.now(datetime.timezone.utc))
+        alert.add_field(name="호출한 유저", value=f"{requester} (`{requester.id}`)", inline=False)
+        alert.add_field(
+            name="서버",
+            value=f"{interaction.guild.name} (`{interaction.guild.id}`)",
+            inline=False)
+        alert.add_field(name="채널", value=f"#{channel_name}", inline=True)
+        alert.add_field(name="바로가기", value=interaction.channel.mention, inline=True)
+        await server_owner.send(embed=alert)
+    except discord.Forbidden:
+        return await interaction.response.send_message(
+            "❌ 서버장에게 DM을 보낼 수 없어요. DM 수신 설정을 확인해주세요.",
+            ephemeral=True)
+    except discord.NotFound:
+        return await interaction.response.send_message(
+            "❌ 알림을 받을 계정을 찾을 수 없어요.", ephemeral=True)
+    except discord.HTTPException:
+        return await interaction.response.send_message(
+            "❌ DM 전송 중 오류가 발생했어요. 잠시 후 다시 시도해주세요.",
+            ephemeral=True)
+
+    await interaction.response.send_message(
+        "✅ 서버장에게 개인 DM으로 호출 알림을 보냈어요.", ephemeral=True)
 
 @bot.command(name='지갑')
 async def prefix_wallet(ctx):
@@ -3786,6 +3826,7 @@ async def slash_admin_list(interaction: discord.Interaction):
     misc_cmds = [
         ("!관리자모드",   "관리자 모드 ON/OFF 토글"),
         ("!공지 [내용]",  "봇으로 공지 전송"),
+        ("/서버장호출",   "서버장에게 개인 DM으로 알림"),
     ]
 
     embed.add_field(name="💰 경제 명령어", value=fmt(eco_cmds), inline=False)
