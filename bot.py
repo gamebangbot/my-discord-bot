@@ -195,10 +195,22 @@ class Bot(commands.Bot):
                 CREATE TABLE IF NOT EXISTS shop_items (
                     item_number INTEGER PRIMARY KEY,
                     item_name TEXT NOT NULL,
-                    price BIGINT NOT NULL CHECK (price >= 0),
+                    price BIGINT NOT NULL DEFAULT 0 CHECK (price >= 0),
+                    buy_price BIGINT NOT NULL DEFAULT 0 CHECK (buy_price >= 0),
+                    sell_price BIGINT NOT NULL DEFAULT 0 CHECK (sell_price >= 0),
                     created_at TIMESTAMP DEFAULT NOW(),
                     updated_at TIMESTAMP DEFAULT NOW()
                 )""")
+            # 기존 상점의 단일 가격을 구매가·판매가로 안전하게 이전
+            await conn.execute(
+                "ALTER TABLE shop_items ADD COLUMN IF NOT EXISTS buy_price BIGINT")
+            await conn.execute(
+                "ALTER TABLE shop_items ADD COLUMN IF NOT EXISTS sell_price BIGINT")
+            await conn.execute(
+                """UPDATE shop_items
+                   SET buy_price=COALESCE(buy_price, price),
+                       sell_price=COALESCE(sell_price, price)
+                   WHERE buy_price IS NULL OR sell_price IS NULL""")
         # 캐시 로드
         rows = await self.db.fetch("SELECT user_id FROM bot_bans")
         bot_banned_cache.update(r['user_id'] for r in rows)
@@ -525,13 +537,32 @@ async def prefix_profile(ctx):
     embed = await build_profile_embed(bot.db, ctx.author)
     await ctx.send(embed=embed)
 
+def parse_shop_item_input(item_input: str) -> tuple[int, str, int, int] | None:
+    """번호.상품명 (구매가) (판매가)를 파싱합니다. 가격 하나는 양쪽에 같이 적용합니다."""
+    match = re.fullmatch(
+        r"\s*(\d+)\s*\.\s*(.+?)\s+"
+        r"(?:\(\s*([\d,]+)\s*\)|([\d,]+))"
+        r"(?:\s+(?:\(\s*([\d,]+)\s*\)|([\d,]+)))?\s*",
+        item_input)
+    if not match:
+        return None
+
+    item_number = int(match.group(1))
+    item_name = match.group(2).strip()
+    buy_price = int((match.group(3) or match.group(4)).replace(",", ""))
+    sell_price = int((match.group(5) or match.group(6) or match.group(3) or match.group(4)).replace(",", ""))
+    return item_number, item_name, buy_price, sell_price
+
 @bot.tree.command(name="상점", description="🛒 게임 상점의 상품과 가격을 확인합니다")
 async def slash_shop(interaction: discord.Interaction):
     if not await slash_guard(interaction): return
 
     try:
         rows = await bot.db.fetch(
-            "SELECT item_number, item_name, price FROM shop_items ORDER BY item_number")
+            """SELECT item_number, item_name,
+                      COALESCE(buy_price, price) AS buy_price,
+                      COALESCE(sell_price, price) AS sell_price
+               FROM shop_items ORDER BY item_number""")
     except Exception:
         return await interaction.response.send_message(
             "❌ 상점 정보를 불러오지 못했어요. 잠시 후 다시 시도해주세요.",
@@ -540,7 +571,8 @@ async def slash_shop(interaction: discord.Interaction):
     if not rows:
         embed = discord.Embed(
             title="🛒 게임 상점",
-            description="아직 등록된 상품이 없어요.\n관리자는 `!상점추가 번호.상품명 (가격)`으로 상품을 등록할 수 있어요.",
+            description="아직 등록된 상품이 없어요.\n"
+                        "관리자는 `!상점추가 번호.상품명 (살 때 가격) (팔 때 가격)`으로 등록할 수 있어요.",
             color=discord.Color.gold())
         embed.set_footer(text=MADE_BY_TAG)
         return await interaction.response.send_message(embed=embed)
@@ -549,7 +581,8 @@ async def slash_shop(interaction: discord.Interaction):
     for start in range(0, len(rows), 25):
         chunk = rows[start:start + 25]
         lines = "\n".join(
-            f"**{row['item_number']}. {row['item_name']}** — `{row['price']:,}원`"
+            f"**{row['item_number']}. {row['item_name']}**\n"
+            f"　구매: `{row['buy_price']:,}원` · 판매: `{row['sell_price']:,}원`"
             for row in chunk)
         embed = discord.Embed(
             title="🛒 게임 상점" + (f" ({start // 25 + 1})" if len(rows) > 25 else ""),
@@ -567,17 +600,21 @@ async def prefix_shop(ctx):
     if not await bot_guard(ctx): return
     try:
         rows = await bot.db.fetch(
-            "SELECT item_number, item_name, price FROM shop_items ORDER BY item_number")
+            """SELECT item_number, item_name,
+                      COALESCE(buy_price, price) AS buy_price,
+                      COALESCE(sell_price, price) AS sell_price
+               FROM shop_items ORDER BY item_number""")
     except Exception:
         return await ctx.send("❌ 상점 정보를 불러오지 못했어요. 잠시 후 다시 시도해주세요.", delete_after=8)
 
     if not rows:
         return await ctx.send(
             "🛒 **게임 상점**\n아직 등록된 상품이 없어요.\n"
-            "관리자는 `!상점추가 번호.상품명 (가격)`으로 상품을 등록할 수 있어요.")
+            "관리자는 `!상점추가 번호.상품명 (살 때 가격) (팔 때 가격)`으로 상품을 등록할 수 있어요.")
 
     lines = "\n".join(
-        f"**{row['item_number']}. {row['item_name']}** — `{row['price']:,}원`"
+        f"**{row['item_number']}. {row['item_name']}**\n"
+        f"　구매: `{row['buy_price']:,}원` · 판매: `{row['sell_price']:,}원`"
         for row in rows)
     embed = discord.Embed(title="🛒 게임 상점", description=lines, color=discord.Color.gold())
     embed.set_footer(text=f"총 {len(rows)}개 상품 | 구매 기능은 지원하지 않아요. | {MADE_BY_TAG}")
@@ -2556,52 +2593,56 @@ async def prefix_admin_mode(ctx, mode: str = ""):
 @bot.command(name='상점추가')
 @commands.has_permissions(administrator=True)
 async def prefix_add_shop_item(ctx, *, item_input: str):
-    """관리자 상점 상품 등록/수정: !상점추가 1.상품이름 (가격)"""
+    """관리자 상점 상품 등록: !상점추가 1.상품이름 (구매가) (판매가)"""
     if not await bot_guard(ctx): return
     err = _owner_or_admin_check(ctx)
     if err: return await ctx.send(err, delete_after=5)
 
-    # 번호와 상품명은 "1.상품명", 가격은 마지막의 숫자 또는 "(숫자)" 형식으로 받습니다.
-    match = re.fullmatch(
-        r"\s*(\d+)\s*\.\s*(.+?)\s+(?:\(\s*([\d,]+)\s*\)|([\d,]+))\s*",
-        item_input)
-    if not match:
+    parsed = parse_shop_item_input(item_input)
+    if not parsed:
         return await ctx.send(
-            "사용법: `!상점추가 번호.상품이름 (가격)`\n"
-            "예시: `!상점추가 1.초보자 곡괭이 (5,000)`",
+            "사용법: `!상점추가 번호.상품이름 (구매가) (판매가)`\n"
+            "예시: `!상점추가 1.초보자 곡괭이 (10,000) (5,000)`",
             delete_after=8)
 
-    item_number = int(match.group(1))
-    item_name = match.group(2).strip()
-    price = int((match.group(3) or match.group(4)).replace(",", ""))
+    item_number, item_name, buy_price, sell_price = parsed
     if item_number <= 0:
         return await ctx.send("❌ 상품 번호는 1 이상이어야 해요.", delete_after=5)
     if not item_name:
         return await ctx.send("❌ 상품 이름을 입력해주세요.", delete_after=5)
-    if price < 0:
-        return await ctx.send("❌ 가격은 0원 이상이어야 해요.", delete_after=5)
-    if price < 0:
+    if buy_price < 0 or sell_price < 0:
         return await ctx.send("❌ 가격은 0원 이상이어야 해요.", delete_after=5)
 
     existing = await bot.db.fetchrow(
-        "SELECT item_name, price FROM shop_items WHERE item_number=$1", item_number)
+        """SELECT item_name,
+                      COALESCE(buy_price, price) AS buy_price,
+                      COALESCE(sell_price, price) AS sell_price
+           FROM shop_items WHERE item_number=$1""",
+        item_number)
     await bot.db.execute(
-        """INSERT INTO shop_items (item_number, item_name, price, updated_at)
-           VALUES ($1, $2, $3, NOW())
+        """INSERT INTO shop_items
+                  (item_number, item_name, price, buy_price, sell_price, updated_at)
+           VALUES ($1, $2, $3, $3, $4, NOW())
            ON CONFLICT (item_number) DO UPDATE
-           SET item_name=EXCLUDED.item_name, price=EXCLUDED.price, updated_at=NOW()""",
-        item_number, item_name, price)
+           SET item_name=EXCLUDED.item_name,
+               price=EXCLUDED.price,
+               buy_price=EXCLUDED.buy_price,
+               sell_price=EXCLUDED.sell_price,
+               updated_at=NOW()""",
+        item_number, item_name, buy_price, sell_price)
 
     action = "수정" if existing else "추가"
     embed = discord.Embed(
         title=f"✅ 상점 상품 {action} 완료",
         description=f"상품 **{item_number}. {item_name}** 을(를) 상점에 {action}했어요.",
         color=discord.Color.green())
-    embed.add_field(name="가격", value=f"{price:,}원", inline=True)
+    embed.add_field(name="구매 가격", value=f"{buy_price:,}원", inline=True)
+    embed.add_field(name="판매 가격", value=f"{sell_price:,}원", inline=True)
     if existing:
         embed.add_field(
             name="변경 전",
-            value=f"{existing['item_name']} — {existing['price']:,}원",
+            value=f"{existing['item_name']}\n"
+                  f"구매 {existing['buy_price']:,}원 · 판매 {existing['sell_price']:,}원",
             inline=True)
     embed.set_footer(text="유저는 /상점 명령어로 상품 목록을 확인할 수 있어요.")
     await ctx.send(embed=embed)
@@ -2609,30 +2650,32 @@ async def prefix_add_shop_item(ctx, *, item_input: str):
 @bot.command(name='상점수정')
 @commands.has_permissions(administrator=True)
 async def prefix_edit_shop_item(ctx, *, item_input: str):
-    """관리자 상점 상품 수정: !상점수정 1.상품이름 (가격)"""
+    """관리자 상점 상품 수정: !상점수정 1.상품이름 (구매가) (판매가)"""
     if not await bot_guard(ctx): return
     err = _owner_or_admin_check(ctx)
     if err: return await ctx.send(err, delete_after=5)
 
-    match = re.fullmatch(
-        r"\s*(\d+)\s*\.\s*(.+?)\s+(?:\(\s*([\d,]+)\s*\)|([\d,]+))\s*",
-        item_input)
-    if not match:
+    parsed = parse_shop_item_input(item_input)
+    if not parsed:
         return await ctx.send(
-            "사용법: `!상점수정 번호.상품이름 (가격)`\n"
-            "예시: `!상점수정 1.초보자 곡괭이 (5,000)`",
+            "사용법: `!상점수정 번호.상품이름 (구매가) (판매가)`\n"
+            "예시: `!상점수정 1.초보자 곡괭이 (10,000) (5,000)`",
             delete_after=8)
 
-    item_number = int(match.group(1))
-    item_name = match.group(2).strip()
-    price = int((match.group(3) or match.group(4)).replace(",", ""))
+    item_number, item_name, buy_price, sell_price = parsed
     if item_number <= 0:
         return await ctx.send("❌ 상품 번호는 1 이상이어야 해요.", delete_after=5)
     if not item_name:
         return await ctx.send("❌ 상품 이름을 입력해주세요.", delete_after=5)
+    if buy_price < 0 or sell_price < 0:
+        return await ctx.send("❌ 가격은 0원 이상이어야 해요.", delete_after=5)
 
     existing = await bot.db.fetchrow(
-        "SELECT item_name, price FROM shop_items WHERE item_number=$1", item_number)
+        """SELECT item_name,
+                      COALESCE(buy_price, price) AS buy_price,
+                      COALESCE(sell_price, price) AS sell_price
+           FROM shop_items WHERE item_number=$1""",
+        item_number)
     if not existing:
         return await ctx.send(
             f"❌ 상품 번호 **{item_number}**가 없어요. 먼저 `!상점추가`로 등록해주세요.",
@@ -2640,15 +2683,22 @@ async def prefix_edit_shop_item(ctx, *, item_input: str):
 
     await bot.db.execute(
         """UPDATE shop_items
-           SET item_name=$1, price=$2, updated_at=NOW()
-           WHERE item_number=$3""",
-        item_name, price, item_number)
+           SET item_name=$1, price=$2, buy_price=$2, sell_price=$3, updated_at=NOW()
+           WHERE item_number=$4""",
+        item_name, buy_price, sell_price, item_number)
     embed = discord.Embed(
         title="✅ 상점 상품 수정 완료",
         description=f"**{item_number}. {item_name}**으로 수정했어요.",
         color=discord.Color.green())
-    embed.add_field(name="변경 전", value=f"{existing['item_name']} — {existing['price']:,}원", inline=True)
-    embed.add_field(name="변경 후", value=f"{item_name} — {price:,}원", inline=True)
+    embed.add_field(
+        name="변경 전",
+        value=f"{existing['item_name']}\n"
+              f"구매 {existing['buy_price']:,}원 · 판매 {existing['sell_price']:,}원",
+        inline=True)
+    embed.add_field(
+        name="변경 후",
+        value=f"{item_name}\n구매 {buy_price:,}원 · 판매 {sell_price:,}원",
+        inline=True)
     await ctx.send(embed=embed)
 
 @bot.command(name='상점삭제')
@@ -2664,7 +2714,7 @@ async def prefix_delete_shop_item(ctx, item_number: int):
     deleted = await bot.db.fetchrow(
         """DELETE FROM shop_items
            WHERE item_number=$1
-           RETURNING item_name, price""",
+           RETURNING item_name, buy_price, sell_price""",
         item_number)
     if not deleted:
         return await ctx.send(
@@ -2674,7 +2724,10 @@ async def prefix_delete_shop_item(ctx, item_number: int):
         title="🗑️ 상점 상품 삭제 완료",
         description=f"**{item_number}. {deleted['item_name']}** 상품을 삭제했어요.",
         color=discord.Color.orange())
-    embed.add_field(name="삭제된 가격", value=f"{deleted['price']:,}원", inline=True)
+    embed.add_field(
+        name="삭제된 가격",
+        value=f"구매 {deleted['buy_price']:,}원 · 판매 {deleted['sell_price']:,}원",
+        inline=True)
     await ctx.send(embed=embed)
 
 def _owner_or_admin_check(ctx, target: discord.Member | None = None) -> str | None:
@@ -3678,8 +3731,8 @@ async def slash_admin_list(interaction: discord.Interaction):
         ("!돈차감 @유저1 @유저2... 금액", "다중 유저 잔액 차감"),
         ("!초기화 @유저",                  "유저 잔액 0으로 초기화"),
         ("!스탯초기화 @유저",              "거래내역·출석기록 초기화"),
-        ("!상점추가 번호.상품명 (가격)",    "상점 상품 추가"),
-        ("!상점수정 번호.상품명 (가격)",    "기존 상점 상품 수정"),
+        ("!상점추가 번호.상품명 (구매가) (판매가)", "상점 상품 추가"),
+        ("!상점수정 번호.상품명 (구매가) (판매가)", "기존 상점 상품 수정"),
         ("!상점삭제 번호",                 "상점 상품 삭제"),
     ]
     sanction_cmds = [
