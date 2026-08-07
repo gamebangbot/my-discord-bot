@@ -190,6 +190,15 @@ class Bot(commands.Bot):
                     panel_message_id BIGINT,
                     created_at TIMESTAMP DEFAULT NOW()
                 )""")
+            # ── 상점 목록 ──
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS shop_items (
+                    item_number INTEGER PRIMARY KEY,
+                    item_name TEXT NOT NULL,
+                    price BIGINT NOT NULL CHECK (price >= 0),
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )""")
         # 캐시 로드
         rows = await self.db.fetch("SELECT user_id FROM bot_bans")
         bot_banned_cache.update(r['user_id'] for r in rows)
@@ -515,6 +524,37 @@ async def prefix_profile(ctx):
     if not await bot_guard(ctx): return
     embed = await build_profile_embed(bot.db, ctx.author)
     await ctx.send(embed=embed)
+
+@bot.tree.command(name="상점", description="🛒 게임 상점의 상품과 가격을 확인합니다")
+async def slash_shop(interaction: discord.Interaction):
+    if not await slash_guard(interaction): return
+
+    rows = await bot.db.fetch(
+        "SELECT item_number, item_name, price FROM shop_items ORDER BY item_number")
+    if not rows:
+        embed = discord.Embed(
+            title="🛒 게임 상점",
+            description="아직 등록된 상품이 없어요.",
+            color=discord.Color.gold())
+        embed.set_footer(text=f"관리자는 !상점추가 로 상품을 등록할 수 있어요. | {MADE_BY_TAG}")
+        return await interaction.response.send_message(embed=embed)
+
+    embeds = []
+    for start in range(0, len(rows), 25):
+        chunk = rows[start:start + 25]
+        lines = "\n".join(
+            f"**{row['item_number']}. {row['item_name']}** — `{row['price']:,}원`"
+            for row in chunk)
+        embed = discord.Embed(
+            title="🛒 게임 상점" + (f" ({start // 25 + 1})" if len(rows) > 25 else ""),
+            description=lines,
+            color=discord.Color.gold())
+        embed.set_footer(text=f"총 {len(rows)}개 상품 | 구매 기능은 지원하지 않아요. | {MADE_BY_TAG}")
+        embeds.append(embed)
+
+    await interaction.response.send_message(embed=embeds[0])
+    for embed in embeds[1:]:
+        await interaction.followup.send(embed=embed)
 
 @bot.command(name='지갑')
 async def prefix_wallet(ctx):
@@ -2486,6 +2526,57 @@ async def prefix_admin_mode(ctx, mode: str = ""):
             description="관리자 모드가 **해제**되었습니다.", color=discord.Color.dark_gray())
     await ctx.send(embed=embed)
 
+@bot.command(name='상점추가')
+@commands.has_permissions(administrator=True)
+async def prefix_add_shop_item(ctx, *, item_input: str):
+    """관리자 상점 상품 등록/수정: !상점추가 1.상품이름 (가격)"""
+    if not await bot_guard(ctx): return
+    err = _owner_or_admin_check(ctx)
+    if err: return await ctx.send(err, delete_after=5)
+
+    # 번호와 상품명은 "1.상품명", 가격은 마지막의 숫자 또는 "(숫자)" 형식으로 받습니다.
+    match = re.fullmatch(
+        r"\s*(\d+)\s*\.\s*(.+?)\s+(?:\(\s*([\d,]+)\s*\)|([\d,]+))\s*",
+        item_input)
+    if not match:
+        return await ctx.send(
+            "사용법: `!상점추가 번호.상품이름 (가격)`\n"
+            "예시: `!상점추가 1.초보자 곡괭이 (5,000)`",
+            delete_after=8)
+
+    item_number = int(match.group(1))
+    item_name = match.group(2).strip()
+    price = int((match.group(3) or match.group(4)).replace(",", ""))
+    if item_number <= 0:
+        return await ctx.send("❌ 상품 번호는 1 이상이어야 해요.", delete_after=5)
+    if not item_name:
+        return await ctx.send("❌ 상품 이름을 입력해주세요.", delete_after=5)
+    if price < 0:
+        return await ctx.send("❌ 가격은 0원 이상이어야 해요.", delete_after=5)
+
+    existing = await bot.db.fetchrow(
+        "SELECT item_name, price FROM shop_items WHERE item_number=$1", item_number)
+    await bot.db.execute(
+        """INSERT INTO shop_items (item_number, item_name, price, updated_at)
+           VALUES ($1, $2, $3, NOW())
+           ON CONFLICT (item_number) DO UPDATE
+           SET item_name=EXCLUDED.item_name, price=EXCLUDED.price, updated_at=NOW()""",
+        item_number, item_name, price)
+
+    action = "수정" if existing else "추가"
+    embed = discord.Embed(
+        title=f"✅ 상점 상품 {action} 완료",
+        description=f"상품 **{item_number}. {item_name}** 을(를) 상점에 {action}했어요.",
+        color=discord.Color.green())
+    embed.add_field(name="가격", value=f"{price:,}원", inline=True)
+    if existing:
+        embed.add_field(
+            name="변경 전",
+            value=f"{existing['item_name']} — {existing['price']:,}원",
+            inline=True)
+    embed.set_footer(text="유저는 /상점 명령어로 상품 목록을 확인할 수 있어요.")
+    await ctx.send(embed=embed)
+
 def _owner_or_admin_check(ctx, target: discord.Member | None = None) -> str | None:
     """봇 개발자 보호. 문제가 있으면 에러 문자열 반환."""
     # 발령자 본인이 봇 개발자면 → 자기 자신에게 명령어 적용 허용
@@ -3487,6 +3578,7 @@ async def slash_admin_list(interaction: discord.Interaction):
         ("!돈차감 @유저1 @유저2... 금액", "다중 유저 잔액 차감"),
         ("!초기화 @유저",                  "유저 잔액 0으로 초기화"),
         ("!스탯초기화 @유저",              "거래내역·출석기록 초기화"),
+        ("!상점추가 번호.상품명 (가격)",    "상점 상품 추가 또는 수정"),
     ]
     sanction_cmds = [
         ("!경고부여 @유저 횟수", "경고 횟수 부여 (기본 1)"),
@@ -3570,6 +3662,7 @@ def build_help_embeds(prefix: bool) -> list[discord.Embed]:
     e1.add_field(name=f"📋 {p}거래내역", value="최근 15건 거래 내역 조회", inline=True)
     e1.add_field(name=f"🏆 {p}랭킹", value="서버 자산 TOP 10 순위", inline=True)
     e1.add_field(name=f"💸 {p}송금", value=f"다른 유저에게 돈 송금\n`{p}송금 @철수 10000`", inline=True)
+    e1.add_field(name=f"🛒 {p}상점", value="게임 상점 상품과 가격 확인", inline=True)
     e1.add_field(name=f"📊 {p}운영통계", value="봇 전체 운영 통계 확인", inline=True)
     e1.add_field(name="\u200b", value="\u200b", inline=True)
 
