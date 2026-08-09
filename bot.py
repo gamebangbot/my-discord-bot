@@ -1683,22 +1683,22 @@ ORE_LIST: dict[str, list[str]] = {
 ALL_ORES: list[str] = [o for lst in ORE_LIST.values() for o in lst]
 
 PICK_DATA: dict[str, dict] = {
-    "일반":{"emoji":"⛏️", "color":0x808080,"time":40,"destroy":0.20,"repair":10_000,
+    "일반":{"emoji":"⛏️", "color":0x808080,"time":40,"destroy":0.04,"repair":15_000,
             "items":["휴대용 광선 커터","강화 탄소 섬유 곡괭이","고철더미에서 발굴한 드릴",
                      "수동식 유압 굴착기","에너지 셀이 방전된 정","마그네틱 합금 렌치","기계공의 다목적 망치"]},
-    "희귀":{"emoji":"🔵","color":0x1E90FF,"time":30,"destroy":0.15,"repair":25_000,
+    "희귀":{"emoji":"🔵","color":0x1E90FF,"time":30,"destroy":0.18,"repair":40_000,
             "items":["과부하 방전 레이저","티타늄 코어 보링 드릴","마나 가스 충전식 착암기",
                      "고주파 미세 진동 커터","열처리 정밀 융해기","마이크로 펄스 굴착 래칫"]},
-    "레어":{"emoji":"🟣","color":0x9B59B6,"time":22,"destroy":0.12,"repair":100_000,
+    "레어":{"emoji":"🟣","color":0x9B59B6,"time":22,"destroy":0.15,"repair":180_000,
             "items":["프로토타입 플라즈마 드릴","중력장 왜곡 커터","아크 방전식 일렉트로 픽",
                      "네오-디뮴 자력 파쇄기","사이오닉 에너지 나이프"]},
-    "에픽":{"emoji":"🟠","color":0xFF8C00,"time":16,"destroy":0.10,"repair":250_000,
+    "에픽":{"emoji":"🟠","color":0xFF8C00,"time":16,"destroy":0.13,"repair":400_000,
             "items":["암흑 물질 인젝터 드릴","쿼크 입자 가속 굴착기","볼텍스 차원 정밀 정","나노 머신 분해 레이저 포"]},
-    "신화":{"emoji":"✨","color":0x7B68EE,"time":12, "destroy":0.08,"repair":750_000,
+    "신화":{"emoji":"✨","color":0x7B68EE,"time":12, "destroy":0.10,"repair":1_200_000,
             "items":["반물질 동력원 코어 가해기","시공간 가속 입자 커터","스타더스트 제련 드릴"]},
-    "전설":{"emoji":"💎","color":0xFFD700,"time":9, "destroy":0.06,"repair":1_500_000,
+    "전설":{"emoji":"💎","color":0xFFD700,"time":9, "destroy":0.08,"repair":2_500_000,
             "items":["초신성 폭발 잔해 크러셔","카지노 리치 골드 엠페러"]},
-    "미친":{"emoji":"🌌","color":0xFF00FF,"time":6, "destroy":0.05,"repair":3_000_000,
+    "미친":{"emoji":"🌌","color":0xFF00FF,"time":6, "destroy":0.07,"repair":5_000_000,
             "items":["우주의 끝을 갈라낸 균열 드릴"]},
 }
 ALL_PICKS: list[str] = [p for d in PICK_DATA.values() for p in d["items"]]
