@@ -806,18 +806,19 @@ async def prefix_transfer(ctx, target: discord.Member, amount: int):
 #  도박
 # ══════════════════════════════════════════════════════════════════════════════
 def get_gamble_result() -> tuple[bool, float]:
-    r = random.random()
-    if r < 0.25:   return False, 0.0
-    elif r < 0.50:
-        r2 = random.random()
-        if r2 < 0.60: return True, round(random.uniform(2.1, 2.5), 3)
-        else:          return True, round(random.uniform(2.6, 3.0), 3)
-    elif r < 0.70:
-        r2 = random.random()
-        if r2 < 0.55: return True, round(random.uniform(1.1, 1.5), 3)
-        else:          return True, round(random.uniform(1.6, 2.0), 3)
-    else:
-        return False, 0.0
+            r = random.random()
+            if r < 0.03:
+                # 3% 확률: 2.1배 ~ 2.5배 (대박)
+                return True, round(random.uniform(2.1, 2.5), 3)
+            elif r < 0.13:
+                # 10% 확률 (0.03 ~ 0.13): 1.8배 ~ 2.0배 (중박)
+                return True, round(random.uniform(1.8, 2.0), 3)
+            elif r < 0.38:
+                # 25% 확률 (0.13 ~ 0.38): 1.2배 ~ 1.5배 (소박)
+                return True, round(random.uniform(1.2, 1.5), 3)
+            else:
+                # 62% 확률: 꽝 (0배)
+                return False, 0.0
 
 def _gamble_anim_params(won: bool, multiplier: float) -> tuple[int, bool]:
     if not won:
@@ -1651,14 +1652,14 @@ async def prefix_title_book(ctx):
 #  ⛏️ 광질 게임 — 데이터 (밸런스 조정: 고등급 확률 대폭 하향)
 # ══════════════════════════════════════════════════════════════════════════════
 ORE_GRADES: dict[str, dict] = {
-    "일반": { "emoji": "🟫", "color": 0x8B8B8B, "w_min": 1, "w_max": 500, "w_per_g": 1, "prob": 0.90}, # 0.70 -> 0.90 (대폭 상향)
-    "희귀": { "emoji": "⚫", "color": 0x5C4033, "w_min": 400, "w_max": 1500, "w_per_g": 2, "prob": 0.07}, # 0.20 -> 0.07
-    "레어": { "emoji": "🔵", "color": 0xFF8C00, "w_min": 1400, "w_max": 3500, "w_per_g": 5, "prob": 0.02}, # 0.07 -> 0.02
-    "고급": { "emoji": "🟢", "color": 0x00B050, "w_min": 3500, "w_max": 8000, "w_per_g": 15, "prob": 0.008}, # 0.02 -> 0.008
-    "신화": { "emoji": "🔷", "color": 0x7B68EE, "w_min": 8000, "w_max": 20000, "w_per_g": 30, "prob": 0.001}, # 0.007 -> 0.001
-    "전설": { "emoji": "💠", "color": 0x00BFFF, "w_min": 20000, "w_max": 50000, "w_per_g": 60, "prob": 0.0001}, # 0.002 -> 0.0001
-    "미친": { "emoji": "🟣", "color": 0xFF00FF, "w_min": 50000, "w_max": 99999, "w_per_g": 100, "prob": 0.000005}, # 0.00004 -> 0.000005
-    "???": { "emoji": "⚪", "color": 0xFFFFFF, "w_min": 1, "w_max": 10_000_000, "w_per_g": 0.5, "prob": 0.000001} # 0.000005 -> 0.000001
+    "일반": { "emoji": "🟫", "color": 0x8B8B8B, "w_min": 1, "w_max": 500, "w_per_g": 1, "prob": 0.80}, # 0.90 -> 0.80 10%p 감소 (희귀 등급에 확률 지분 넘김)
+    "희귀": { "emoji": "⚫", "color": 0x5C4033, "w_min": 400, "w_max": 1500, "w_per_g": 2, "prob": 0.185}, # 0.07 -> 0.185
+    "레어": { "emoji": "🔵", "color": 0xFF8C00, "w_min": 1400, "w_max": 3500, "w_per_g": 5, "prob": 0.01}, # 0.01 -> 0.01
+    "고급": { "emoji": "🟢", "color": 0x00B050, "w_min": 3500, "w_max": 8000, "w_per_g": 15, "prob": 0.004}, # 0.008 -> 0.004
+    "신화": { "emoji": "🔷", "color": 0x7B68EE, "w_min": 8000, "w_max": 20000, "w_per_g": 30, "prob": 0.0008}, # 0.001 -> 0.0008
+    "전설": { "emoji": "💠", "color": 0x00BFFF, "w_min": 20000, "w_max": 50000, "w_per_g": 60, "prob": 0.0001}, # 0.0001 -> 0.0001
+    "미친": { "emoji": "🟣", "color": 0xFF00FF, "w_min": 50000, "w_max": 99999, "w_per_g": 100, "prob": 0.000003}, # 0.00005 -> 0.000003
+    "???": { "emoji": "⚪", "color": 0xFFFFFF, "w_min": 1, "w_max": 10_000_000, "w_per_g": 0.5, "prob": 0.000001} # 0.000001 -> 0.000001
 }
 
 ORE_LIST: dict[str, list[str]] = {
