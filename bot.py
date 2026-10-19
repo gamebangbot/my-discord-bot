@@ -2631,6 +2631,332 @@ async def prefix_admin_mode(ctx, mode: str = ""):
             description="관리자 모드가 **해제**되었습니다.", color=discord.Color.dark_gray())
     await ctx.send(embed=embed)
 
+HONOR_ROLE_TEMPLATE_NAMES = {f"명예{i}" for i in range(1, 6)}
+ROLE_PERMISSION_DENYLIST = {
+    "administrator",
+    "kick_members",
+    "ban_members",
+    "moderate_members",
+    "view_audit_log",
+    "mention_everyone",
+}
+ADMIN_LOG_CHANNEL_CONFIG_KEYS = (
+    "admin_log_channel_id",
+    "admin_log_channel",
+    "adminlog_channel_id",
+)
+ADMIN_LOG_CHANNEL_NAMES = {"관리자로그", "관리자기록", "adminlog", "adminlogs"}
+
+def _safe_template_permissions(template_role: discord.Role) -> discord.Permissions:
+    """명예 템플릿에서 관리자·관리 계열 및 제재 권한을 제외해 복사합니다."""
+    permissions = discord.Permissions.none()
+    for permission_name, enabled in template_role.permissions:
+        if (enabled
+                and not permission_name.startswith("manage_")
+                and permission_name not in ROLE_PERMISSION_DENYLIST):
+            setattr(permissions, permission_name, True)
+    return permissions
+
+def _get_bot_guild_member(guild: discord.Guild) -> discord.Member | None:
+    if bot.user is None:
+        return None
+    return guild.me or guild.get_member(bot.user.id)
+
+def _role_delete_protection_error(
+    role: discord.Role,
+    bot_member: discord.Member | None,
+) -> str | None:
+    if role.is_default():
+        return "기본 역할(@everyone)은 삭제할 수 없어요."
+    if role.name in HONOR_ROLE_TEMPLATE_NAMES:
+        return "명예1~명예5 템플릿 역할은 삭제할 수 없어요."
+    if role.managed:
+        return "봇이나 연동 서비스가 관리하는 역할은 삭제할 수 없어요."
+    if bot_member is None:
+        return "봇의 서버 역할 정보를 확인할 수 없어요."
+    if role >= bot_member.top_role:
+        return "봇의 최고 역할과 같거나 더 높은 역할은 관리할 수 없어요. 봇 역할을 위로 옮겨주세요."
+    return None
+
+async def _send_role_admin_log(
+    guild: discord.Guild,
+    action: str,
+    actor: discord.Member,
+    role: discord.Role,
+    template_role: discord.Role | None = None,
+    color_hex: str | None = None,
+) -> None:
+    """기존 관리자 로그 채널이 확인되면 역할 변경 내역을 남깁니다."""
+    channel = None
+    try:
+        config_row = await bot.db.fetchrow(
+            """SELECT value FROM bot_config
+               WHERE key = ANY($1::text[])
+               ORDER BY CASE key
+                   WHEN 'admin_log_channel_id' THEN 1
+                   WHEN 'admin_log_channel' THEN 2
+                   ELSE 3
+               END
+               LIMIT 1""",
+            list(ADMIN_LOG_CHANNEL_CONFIG_KEYS))
+        if config_row:
+            try:
+                channel = guild.get_channel(int(config_row["value"]))
+            except (TypeError, ValueError):
+                channel = None
+    except Exception:
+        channel = None
+
+    if channel is None:
+        for candidate in guild.text_channels:
+            normalized_name = candidate.name.casefold().replace("-", "").replace("_", "").replace(" ", "")
+            if normalized_name in ADMIN_LOG_CHANNEL_NAMES:
+                channel = candidate
+                break
+    if channel is None or not hasattr(channel, "send"):
+        return
+
+    embed = discord.Embed(
+        title=f"역할 {action} 로그",
+        color=role.color if role.color.value else discord.Color.blurple(),
+        timestamp=datetime.datetime.now(datetime.timezone.utc))
+    embed.add_field(name="작업", value=action, inline=True)
+    embed.add_field(name="실행 관리자", value=f"{actor} (`{actor.id}`)", inline=False)
+    embed.add_field(name="역할", value=f"{role.name} (`{role.id}`)", inline=False)
+    if template_role:
+        embed.add_field(
+            name="기준 역할",
+            value=f"{template_role.name} (`{template_role.id}`)",
+            inline=True)
+    if color_hex:
+        embed.add_field(name="색상", value=color_hex, inline=True)
+    try:
+        await channel.send(embed=embed)
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+
+def _resolve_role_reference(
+    guild: discord.Guild,
+    role_reference: str,
+) -> tuple[discord.Role | None, str | None]:
+    reference = role_reference.strip()
+    if len(reference) >= 2 and reference[0] == reference[-1] and reference[0] in ("'", '"'):
+        reference = reference[1:-1].strip()
+
+    mention_match = re.fullmatch(r"<@&(\d+)>", reference)
+    role_id_match = mention_match or re.fullmatch(r"\d{15,22}", reference)
+    if role_id_match:
+        raw_id = role_id_match.group(1) if mention_match else reference
+        role = guild.get_role(int(raw_id))
+        return (role, None) if role else (None, "해당 ID의 역할을 찾을 수 없어요.")
+
+    matches = [role for role in guild.roles if role.name == reference]
+    if not matches:
+        return None, f"이름이 **{reference}**인 역할을 찾을 수 없어요."
+    if len(matches) > 1:
+        return None, f"**{reference}** 역할이 여러 개예요. 역할 멘션이나 ID로 지정해주세요."
+    return matches[0], None
+
+class RoleDeleteConfirmView(discord.ui.View):
+    def __init__(self, ctx: commands.Context, role: discord.Role):
+        super().__init__(timeout=30)
+        self.ctx = ctx
+        self.role = role
+        self.message: discord.Message | None = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "❌ 이 확인 버튼은 명령어를 실행한 관리자만 사용할 수 있어요.",
+                ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(
+                    content="⌛ 30초 동안 응답이 없어 역할 삭제를 취소했어요.",
+                    embed=None,
+                    view=self)
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="삭제 확인", style=discord.ButtonStyle.danger)
+    async def confirm_delete(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        guild = self.ctx.guild
+        if guild is None:
+            self.stop()
+            return await interaction.response.edit_message(
+                content="❌ 서버 정보를 확인할 수 없어 삭제를 취소했어요.",
+                embed=None, view=None)
+
+        actor = guild.get_member(self.ctx.author.id)
+        if actor is None or not actor.guild_permissions.administrator:
+            self.stop()
+            return await interaction.response.edit_message(
+                content="❌ 관리자 권한을 확인할 수 없어 역할 삭제를 취소했어요.",
+                embed=None, view=None)
+
+        current_role = guild.get_role(self.role.id)
+        if current_role is None:
+            self.stop()
+            return await interaction.response.edit_message(
+                content="ℹ️ 해당 역할은 이미 삭제됐어요.",
+                embed=None, view=None)
+
+        bot_member = _get_bot_guild_member(guild)
+        protection_error = _role_delete_protection_error(current_role, bot_member)
+        if protection_error:
+            self.stop()
+            return await interaction.response.edit_message(
+                content=f"❌ {protection_error}",
+                embed=None, view=None)
+        if bot_member is None or not bot_member.guild_permissions.manage_roles:
+            self.stop()
+            return await interaction.response.edit_message(
+                content="❌ 봇의 역할 관리 권한이 없어 삭제를 취소했어요.",
+                embed=None, view=None)
+
+        try:
+            await current_role.delete(reason=f"Confirmed by {actor}")
+        except discord.Forbidden:
+            self.stop()
+            return await interaction.response.edit_message(
+                content="❌ Discord가 역할 삭제를 거부했어요. 봇 역할 순서와 권한을 확인해주세요.",
+                embed=None, view=None)
+        except discord.HTTPException:
+            self.stop()
+            return await interaction.response.edit_message(
+                content="❌ 역할 삭제에 실패했어요. 잠시 후 다시 시도해주세요.",
+                embed=None, view=None)
+
+        for child in self.children:
+            child.disabled = True
+        self.stop()
+        await interaction.response.edit_message(
+            content=f"✅ 역할 **{current_role.name}** (`{current_role.id}`)을(를) 삭제했어요.",
+            embed=None,
+            view=self)
+        await _send_role_admin_log(guild, "삭제", actor, current_role)
+
+    @discord.ui.button(label="취소", style=discord.ButtonStyle.secondary)
+    async def cancel_delete(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        for child in self.children:
+            child.disabled = True
+        self.stop()
+        await interaction.response.edit_message(
+            content="✅ 역할 삭제를 취소했어요.",
+            embed=None,
+            view=self)
+
+@bot.command(name="역할추가")
+@commands.has_permissions(administrator=True)
+async def prefix_create_role(
+    ctx,
+    role_name: str,
+    template_name: str,
+    color_hex: str,
+):
+    """명예1~5 권한을 안전하게 복사해 새 역할을 만듭니다."""
+    if not await bot_guard(ctx): return
+    if ctx.guild is None:
+        return await ctx.send("❌ 서버 안에서만 사용할 수 있어요.")
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", color_hex):
+        return await ctx.send("❌ 색상은 `#FF0000` 형식의 HEX 코드여야 해요.")
+    if not role_name.strip() or len(role_name) > 100:
+        return await ctx.send("❌ 역할 이름은 1~100자여야 해요.")
+    if template_name not in HONOR_ROLE_TEMPLATE_NAMES:
+        return await ctx.send("❌ 기준 역할은 `명예1`부터 `명예5` 중 하나여야 해요.")
+
+    bot_member = _get_bot_guild_member(ctx.guild)
+    if bot_member is None:
+        return await ctx.send("❌ 봇의 서버 역할 정보를 확인할 수 없어요.")
+    if not bot_member.guild_permissions.manage_roles:
+        return await ctx.send("❌ 봇에 역할 관리 권한이 없어요.")
+
+    template_matches = [r for r in ctx.guild.roles if r.name == template_name]
+    if not template_matches:
+        return await ctx.send(f"❌ 기준 역할 **{template_name}**을(를) 서버에서 찾을 수 없어요.")
+    if len(template_matches) > 1:
+        return await ctx.send(
+            f"❌ **{template_name}** 역할이 여러 개 있어요. 이름이 중복되지 않도록 정리해주세요.")
+    template_role = template_matches[0]
+
+    try:
+        created_role = await ctx.guild.create_role(
+            name=role_name.strip(),
+            colour=discord.Colour(int(color_hex[1:], 16)),
+            permissions=_safe_template_permissions(template_role),
+            hoist=False,
+            mentionable=False,
+            reason=f"{ctx.author} created role from {template_role.name}",
+        )
+    except discord.Forbidden:
+        return await ctx.send("❌ 봇이 역할을 생성할 권한이 없어요. 역할 관리 권한을 확인해주세요.")
+    except discord.HTTPException:
+        return await ctx.send("❌ 역할 생성에 실패했어요. 역할 이름과 서버 설정을 확인해주세요.")
+
+    normalized_color = f"#{created_role.color.value:06X}"
+    await _send_role_admin_log(
+        ctx.guild, "생성", ctx.author, created_role, template_role, normalized_color)
+    embed = discord.Embed(
+        title="✅ 역할 생성 완료",
+        description=f"역할 **{created_role.name}**을(를) 만들었어요. 회원에게 자동 지급하지 않았어요.",
+        color=created_role.color)
+    embed.add_field(name="역할 ID", value=f"`{created_role.id}`", inline=True)
+    embed.add_field(name="색상", value=normalized_color, inline=True)
+    embed.add_field(
+        name="기준 역할",
+        value=f"{template_role.name} (`{template_role.id}`)\n위험한 관리 권한은 복사하지 않았어요.",
+        inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command(name="역할삭제")
+@commands.has_permissions(administrator=True)
+async def prefix_delete_role(ctx, *, role_reference: str):
+    """확인 버튼을 거쳐 지정한 서버 역할을 삭제합니다."""
+    if not await bot_guard(ctx): return
+    if ctx.guild is None:
+        return await ctx.send("❌ 서버 안에서만 사용할 수 있어요.")
+
+    bot_member = _get_bot_guild_member(ctx.guild)
+    if bot_member is None:
+        return await ctx.send("❌ 봇의 서버 역할 정보를 확인할 수 없어요.")
+    if not bot_member.guild_permissions.manage_roles:
+        return await ctx.send("❌ 봇에 역할 관리 권한이 없어요.")
+
+    role, error = _resolve_role_reference(ctx.guild, role_reference)
+    if error:
+        return await ctx.send(f"❌ {error}")
+    if role is None:
+        return await ctx.send("❌ 삭제할 역할을 지정해주세요.")
+
+    protection_error = _role_delete_protection_error(role, bot_member)
+    if protection_error:
+        return await ctx.send(f"❌ {protection_error}")
+
+    embed = discord.Embed(
+        title="⚠️ 역할 삭제 확인",
+        description=(
+            f"**{role.name}** (`{role.id}`) 역할을 삭제할까요?\n"
+            "삭제하면 이 역할을 가진 모든 회원에게서도 역할이 제거됩니다.\n"
+            "30초 안에 확인하지 않으면 자동 취소돼요."
+        ),
+        color=discord.Color.red())
+    view = RoleDeleteConfirmView(ctx, role)
+    view.message = await ctx.send(embed=embed, view=view)
+
 @bot.command(name='상점추가')
 @commands.has_permissions(administrator=True)
 async def prefix_add_shop_item(ctx, *, item_input: str):
@@ -3787,6 +4113,8 @@ async def slash_admin_list(interaction: discord.Interaction):
         ("!op @유저",       "OP 권한 부여 (봇 개발자만)"),
         ("!unop @유저",     "OP 권한 회수 (봇 개발자만)"),
         ("!저장",            "모든 DB 데이터 JSON 백업"),
+        ('!역할추가 "이름" 명예1~명예5 #HEX', "명예 역할 권한을 복사해 새 역할 생성"),
+        ('!역할삭제 "역할 이름"|@역할',      "확인 버튼으로 서버 역할 삭제"),
     ]
     title_cmds = [
         ("!칭호부여 @유저 칭호명 [#색상]",   "이벤트 칭호 지급"),
