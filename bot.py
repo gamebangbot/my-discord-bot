@@ -2668,8 +2668,9 @@ def _role_delete_protection_error(
 ) -> str | None:
     if role.is_default():
         return "기본 역할(@everyone)은 삭제할 수 없어요."
-    if role.name in HONOR_ROLE_TEMPLATE_NAMES:
-        return "명예1~명예5 템플릿 역할은 삭제할 수 없어요."
+    if (role.name in HONOR_ROLE_TEMPLATE_NAMES
+            or re.fullmatch(r"명예\s*\d+\s*렙", role.name.strip())):
+        return "명예 등급 템플릿 역할은 삭제할 수 없어요."
     if role.managed:
         return "봇이나 연동 서비스가 관리하는 역할은 삭제할 수 없어요."
     if bot_member is None:
@@ -2868,7 +2869,7 @@ async def prefix_create_role(
     template_name: str,
     color_hex: str,
 ):
-    """명예1~5 권한을 안전하게 복사해 새 역할을 만듭니다."""
+    """지정한 서버 역할의 안전한 권한만 복사해 새 역할을 만듭니다."""
     if not await bot_guard(ctx): return
     if ctx.guild is None:
         return await ctx.send("❌ 서버 안에서만 사용할 수 있어요.")
@@ -2876,22 +2877,17 @@ async def prefix_create_role(
         return await ctx.send("❌ 색상은 `#FF0000` 형식의 HEX 코드여야 해요.")
     if not role_name.strip() or len(role_name) > 100:
         return await ctx.send("❌ 역할 이름은 1~100자여야 해요.")
-    if template_name not in HONOR_ROLE_TEMPLATE_NAMES:
-        return await ctx.send("❌ 기준 역할은 `명예1`부터 `명예5` 중 하나여야 해요.")
-
     bot_member = _get_bot_guild_member(ctx.guild)
     if bot_member is None:
         return await ctx.send("❌ 봇의 서버 역할 정보를 확인할 수 없어요.")
     if not bot_member.guild_permissions.manage_roles:
         return await ctx.send("❌ 봇에 역할 관리 권한이 없어요.")
 
-    template_matches = [r for r in ctx.guild.roles if r.name == template_name]
-    if not template_matches:
-        return await ctx.send(f"❌ 기준 역할 **{template_name}**을(를) 서버에서 찾을 수 없어요.")
-    if len(template_matches) > 1:
-        return await ctx.send(
-            f"❌ **{template_name}** 역할이 여러 개 있어요. 이름이 중복되지 않도록 정리해주세요.")
-    template_role = template_matches[0]
+    template_role, template_error = _resolve_role_reference(ctx.guild, template_name)
+    if template_error:
+        return await ctx.send(f"❌ 기준 역할을 지정할 수 없어요. {template_error}")
+    if template_role is None:
+        return await ctx.send("❌ 복사할 기준 역할을 지정해주세요.")
 
     try:
         created_role = await ctx.guild.create_role(
@@ -4113,7 +4109,7 @@ async def slash_admin_list(interaction: discord.Interaction):
         ("!op @유저",       "OP 권한 부여 (봇 개발자만)"),
         ("!unop @유저",     "OP 권한 회수 (봇 개발자만)"),
         ("!저장",            "모든 DB 데이터 JSON 백업"),
-        ('!역할추가 "이름" 명예1~명예5 #HEX', "명예 역할 권한을 복사해 새 역할 생성"),
+        ('!역할추가 "이름" "기준 역할" #HEX', "서버의 기준 역할 권한을 안전하게 복사해 새 역할 생성"),
         ('!역할삭제 "역할 이름"|@역할',      "확인 버튼으로 서버 역할 삭제"),
     ]
     title_cmds = [
